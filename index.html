@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>LAN Screen Share – ohne Server (WebRTC)</title>
+<style>
+  :root{--fg:#e7ffe7;--bg:#0a0a0a;--acc:#00ff90}
+  *{box-sizing:border-box} html,body{height:100%} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  header{padding:14px;border-bottom:1px solid #1f1f1f;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  header .tag{padding:6px 10px;border:1px solid #1f1f1f;border-radius:999px;color:#9be6b8}
+  main{display:grid;grid-template-columns:1fr;gap:14px;padding:14px;max-width:1000px;margin:0 auto}
+  .card{background:#0f0f0f;border:1px solid #1f1f1f;border-radius:12px;padding:14px}
+  h2{margin:.2rem 0 10px;font-size:18px;color:#9be6b8}
+  button,select,input,textarea{background:#0b0b0b;color:var(--fg);border:1px solid #2b2b2b;border-radius:10px;padding:10px;font-size:15px}
+  button{cursor:pointer}
+  textarea{width:100%;min-height:120px;font-family:ui-monospace,Consolas,monospace}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .hint{font-size:13px;color:#9be6b8}
+  video{width:100%;max-height:60vh;background:#000;border-radius:10px;border:1px solid #2b2b2b}
+  .ok{color:#7dffb5}.warn{color:#ffd27d}.err{color:#ff7d7d}
+  .grid{display:grid;grid-template-columns:1fr;gap:14px}
+  @media(min-width:900px){ .grid{grid-template-columns:1fr 1fr} }
+  .mono{font-family:ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<header>
+  <strong>LAN Screen Share</strong>
+  <span class="tag">Peer-to-Peer · kein Server</span>
+  <span class="tag">Nur HTTPS / gleiches WLAN</span>
+</header>
+
+<main class="grid">
+  <!-- Sender -->
+  <section class="card">
+    <h2>Ich sende (Handy)</h2>
+    <div class="row">
+      <button id="btnStartShare">🟢 Teilen starten</button>
+      <button id="btnStopShare" disabled>⛔ Stop</button>
+      <label class="hint"><input type="checkbox" id="chkAudio"> Bildschirm-Audio mitschicken (wenn verfügbar)</label>
+    </div>
+    <p class="hint">Android/Chrome: „Gesamten Bildschirm“ wählen. iOS/Safari teilt meist nur den Tab.</p>
+    <video id="localPreview" autoplay muted playsinline></video>
+
+    <h3 class="hint">1) OFFER (vom Handy) → kopieren & an Viewer schicken</h3>
+    <div class="row">
+      <button id="btnMakeOffer" disabled>📄 OFFER erzeugen</button>
+      <button id="btnCopyOffer" disabled>📋 Kopieren</button>
+    </div>
+    <textarea id="offerOut" placeholder="OFFER erscheint hier…" readonly></textarea>
+
+    <h3 class="hint">4) ANSWER (vom Viewer) hier einfügen</h3>
+    <div class="row">
+      <button id="btnSetAnswer" disabled>🔗 Antwort setzen</button>
+      <button id="btnPasteAnswer">📥 Einfügen</button>
+    </div>
+    <textarea id="answerIn" placeholder="ANSWER vom Viewer hier einfügen…"></textarea>
+
+    <div id="logSender" class="mono hint" style="margin-top:8px"></div>
+  </section>
+
+  <!-- Viewer -->
+  <section class="card">
+    <h2>Ich schaue (Laptop/Tablet im selben WLAN)</h2>
+    <h3 class="hint">2) OFFER (vom Handy) hier einfügen</h3>
+    <div class="row">
+      <button id="btnConnect">🔗 Verbinden & ANSWER erzeugen</button>
+      <button id="btnPasteOffer">📥 Einfügen</button>
+    </div>
+    <textarea id="offerIn" placeholder="OFFER vom Handy hier einfügen…"></textarea>
+
+    <h3 class="hint">3) ANSWER → kopieren & ans Handy zurückschicken</h3>
+    <div class="row">
+      <button id="btnCopyAnswer" disabled>📋 ANSWER kopieren</button>
+    </div>
+    <textarea id="answerOut" placeholder="ANSWER erscheint hier…" readonly></textarea>
+
+    <video id="remoteVideo" autoplay playsinline controls></video>
+
+    <div id="logViewer" class="mono hint" style="margin-top:8px"></div>
+  </section>
+</main>
+
+<script>
+/* ====== Mini-Utils ====== */
+const $=id=>document.getElementById(id);
+const log=(el,msg,cls='')=>{ el.innerHTML += `<div class="${cls}">${msg}</div>`; el.scrollTop=el.scrollHeight; };
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const enc = s => btoa(unescape(encodeURIComponent(JSON.stringify(s))));
+const dec = t => JSON.parse(decodeURIComponent(escape(atob(t))));
+
+const sender = { pc:null, stream:null };
+const viewer = { pc:null };
+
+/* ====== Sender (Handy) ====== */
+$('btnStartShare').onclick = async ()=>{
+  try{
+    const withAudio = $('chkAudio').checked;
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: 30 },
+      audio: withAudio
+    });
+    sender.stream = stream;
+    $('localPreview').srcObject = stream;
+    $('btnStartShare').disabled = true;
+    $('btnStopShare').disabled = false;
+    $('btnMakeOffer').disabled = false;
+    log($('logSender'), 'Bildschirmaufnahme aktiv.', 'ok');
+  }catch(e){
+    log($('logSender'), 'getDisplayMedia abgelehnt: '+e.message, 'err');
+  }
+};
+
+$('btnStopShare').onclick = ()=>{
+  if(sender.stream){ sender.stream.getTracks().forEach(t=>t.stop()); sender.stream=null; }
+  if(sender.pc){ try{ sender.pc.close(); }catch{} sender.pc=null; }
+  $('btnStartShare').disabled = false;
+  $('btnStopShare').disabled = true;
+  $('btnMakeOffer').disabled = true;
+  $('btnCopyOffer').disabled = true;
+  $('btnSetAnswer').disabled = true;
+  $('offerOut').value = '';
+  log($('logSender'), 'Übertragung gestoppt.', 'warn');
+};
+
+$('btnMakeOffer').onclick = async ()=>{
+  if(!sender.stream){ log($('logSender'),'Erst „Teilen starten“.','warn'); return; }
+  sender.pc = new RTCPeerConnection({ iceServers: [] }); // nur LAN
+  sender.stream.getTracks().forEach(tr=> sender.pc.addTrack(tr, sender.stream));
+  sender.pc.oniceconnectionstatechange = () => log($('logSender'), 'ICE: '+sender.pc.iceConnectionState);
+  sender.pc.onicecandidate = ev=>{
+    if(!ev.candidate){
+      const offerB64 = enc(sender.pc.localDescription);
+      $('offerOut').value = offerB64;
+      $('btnCopyOffer').disabled = false;
+      $('btnSetAnswer').disabled = false;
+      log($('logSender'),'OFFER bereit. An Viewer schicken.','ok');
+    }
+  };
+  const offer = await sender.pc.createOffer();
+  await sender.pc.setLocalDescription(offer);
+};
+
+$('btnCopyOffer').onclick = async ()=>{ try{ await navigator.clipboard.writeText($('offerOut').value); log($('logSender'),'OFFER in Zwischenablage.','ok'); }catch{ /* ignore */ } };
+$('btnPasteAnswer').onclick = async ()=>{ try{ $('answerIn').value = await navigator.clipboard.readText(); }catch{} };
+
+$('btnSetAnswer').onclick = async ()=>{
+  try{
+    const ans = dec(($('answerIn').value||'').trim());
+    await sender.pc.setRemoteDescription(ans);
+    log($('logSender'),'ANSWER angenommen. Verbinde…','ok');
+  }catch(e){
+    log($('logSender'),'Antwort ungültig: '+e.message,'err');
+  }
+};
+
+/* ====== Viewer (Laptop/Tablet) ====== */
+$('btnConnect').onclick = async ()=>{
+  try{
+    const offer = dec(($('offerIn').value||'').trim());
+    viewer.pc = new RTCPeerConnection({ iceServers: [] }); // nur LAN
+    viewer.pc.ontrack = ev => { $('remoteVideo').srcObject = ev.streams[0]; };
+    viewer.pc.oniceconnectionstatechange = ()=> log($('logViewer'),'ICE: '+viewer.pc.iceConnectionState);
+    await viewer.pc.setRemoteDescription(offer);
+    const answer = await viewer.pc.createAnswer();
+    await viewer.pc.setLocalDescription(answer);
+    // warten, bis ICE vollständig ist (keine weiteren Kandidaten)
+    while(viewer.pc.iceGatheringState !== 'complete'){ await sleep(50); if(viewer.pc.iceGatheringState==='complete') break; }
+    $('answerOut').value = enc(viewer.pc.localDescription);
+    $('btnCopyAnswer').disabled = true; // wird gleich enabled, sobald fertig
+    // onicecandidate=null Candidate => danach enable
+    viewer.pc.onicecandidate = (ev)=>{
+      if(!ev.candidate){ $('answerOut').value = enc(viewer.pc.localDescription); $('btnCopyAnswer').disabled=false; log($('logViewer'),'ANSWER bereit. Zurück ans Handy schicken.','ok'); }
+    };
+  }catch(e){
+    log($('logViewer'),'Fehler: '+e.message,'err');
+  }
+};
+
+$('btnPasteOffer').onclick = async ()=>{ try{ $('offerIn').value = await navigator.clipboard.readText(); }catch{} };
+$('btnCopyAnswer').onclick = async ()=>{ try{ await navigator.clipboard.writeText($('answerOut').value); log($('logViewer'),'ANSWER kopiert.','ok'); }catch{} };
+
+/* ====== HTTPS-Hinweis ====== */
+if(!(window.isSecureContext || ['localhost','127.0.0.1'].includes(location.hostname))){
+  alert('Diese Seite muss über HTTPS laufen (oder localhost), sonst blockiert der Browser Bildschirmfreigabe/WebRTC.');
+}
+</script>
+</body>
+</html>
